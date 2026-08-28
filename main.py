@@ -1,26 +1,35 @@
 from langchain_ollama.llms import OllamaLLM
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 from vector import retriever
 
 model = OllamaLLM(model="llama3.2")
 
-template = """
-You are an exeprt in answering questions about a pizza restaurant
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful pizza restaurant assistant. Answer questions using these customer reviews:\n\n{reviews}"),
+    MessagesPlaceholder(variable_name="history"),
+    ("human", "{question}")
+])
 
-Here are some relevant reviews: {reviews}
-
-Here is the question to answer: {question}
-"""
-prompt = ChatPromptTemplate.from_template(template)
 chain = prompt | model
+history = []
+
+print("Pizza Restaurant RAG QA Assistant (Type 'q' to quit)")
+print("-" * 50)
 
 while True:
-    print("\n\n-------------------------------")
-    question = input("Ask your question (q to quit): ")
-    print("\n\n")
-    if question == "q":
+    q = input("\nUser: ").strip()
+    if not q or q.lower() in ["q", "quit", "exit"]:
+        print("Goodbye!")
         break
-    
-    reviews = retriever.invoke(question)
-    result = chain.invoke({"reviews": reviews, "question": question})
-    print(result)
+
+    # Retrieve relevant review chunks (Hybrid BM25 + Vector Search)
+    context_chunks = retriever.invoke(q)
+    reviews = "\n---\n".join([d.page_content for d in context_chunks])
+
+    # Generate answer with conversational history
+    answer = chain.invoke({"reviews": reviews, "history": history, "question": q})
+    print(f"\nAssistant: {answer}")
+
+    # Track conversation history
+    history.extend([HumanMessage(content=q), AIMessage(content=answer)])
