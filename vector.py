@@ -14,16 +14,42 @@ def load_documents(data_dir: str = "data") -> list:
     docs = []
     # 1. Load multi-format files from data/ directory
     if os.path.exists(data_dir):
-        for path in glob.glob(f"{data_dir}/*.*"):
+        for path in glob.glob(f"{data_dir}/*"):
+            if os.path.isdir(path):
+                continue
             name = os.path.basename(path)
+            
+            # CSV structured files
             if path.endswith(".csv"):
-                df = pd.read_csv(path)
-                for _, r in df.iterrows():
-                    text = f"{r.get('Title', '')} - {r.get('Review', r.get('text', ''))}"
-                    docs.append(Document(page_content=text.strip("- "), metadata={"source": name}))
-            elif path.endswith((".txt", ".md")):
-                with open(path, "r", encoding="utf-8") as f:
-                    docs.append(Document(page_content=f.read(), metadata={"source": name}))
+                try:
+                    df = pd.read_csv(path)
+                    for _, r in df.iterrows():
+                        text = f"{r.get('Title', '')} - {r.get('Review', r.get('text', str(r.to_dict())))}"
+                        docs.append(Document(page_content=text.strip("- "), metadata={"source": name}))
+                except Exception as e:
+                    print(f"Warning: Failed to parse CSV {name}: {e}")
+                    
+            # PDF documents
+            elif path.endswith(".pdf"):
+                try:
+                    from langchain_community.document_loaders import PyPDFLoader
+                    pdf_loader = PyPDFLoader(path)
+                    pdf_docs = pdf_loader.load()
+                    for d in pdf_docs:
+                        d.metadata["source"] = name
+                    docs.extend(pdf_docs)
+                except Exception as e:
+                    print(f"Warning: Could not read PDF {name}: {e}")
+                    
+            # Any other text-based extension (.txt, .md, .json, .log, .html, etc.)
+            else:
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                        if content.strip():
+                            docs.append(Document(page_content=content, metadata={"source": name}))
+                except Exception as e:
+                    print(f"Warning: Could not read text file {name}: {e}")
 
     # 2. Fallback to default CSV if data folder is missing or empty
     if not docs and os.path.exists("realistic_restaurant_reviews.csv"):

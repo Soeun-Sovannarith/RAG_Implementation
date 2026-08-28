@@ -27,9 +27,15 @@ while True:
     context_chunks = retriever.invoke(q)
     reviews = "\n---\n".join([d.page_content for d in context_chunks])
 
-    # Generate answer with conversational history
-    answer = chain.invoke({"reviews": reviews, "history": history, "question": q})
-    print(f"\nAssistant: {answer}")
+    # Stream answer in real-time as tokens arrive
+    print("\nAssistant: ", end="", flush=True)
+    full_response = ""
+    
+    for chunk in chain.stream({"reviews": reviews, "history": history, "question": q}):
+        print(chunk, end="", flush=True)
+        full_response += chunk
+        
+    print()  # Newline after streaming completes
 
     # Track conversation history
-    history.extend([HumanMessage(content=q), AIMessage(content=answer)])
+    history.extend([HumanMessage(content=q), AIMessage(content=full_response)])
