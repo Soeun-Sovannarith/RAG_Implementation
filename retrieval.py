@@ -1,13 +1,13 @@
 from langchain_community.retrievers.bm25 import BM25Retriever
 from langchain_classic.retrievers.ensemble import EnsembleRetriever
-from vector import load_review_documents, vector_store
+from vector import load_documents, vector_store
 
 def get_hybrid_retriever(k: int = 5, bm25_weight: float = 0.4, vector_weight: float = 0.6):
     """
     Creates an EnsembleRetriever combining BM25 keyword search and Dense Vector Similarity search.
     """
     # 1. Load documents for BM25 Sparse Keyword Retriever
-    documents = load_review_documents()
+    documents = load_documents()
     bm25_retriever = BM25Retriever.from_documents(documents)
     bm25_retriever.k = k
 

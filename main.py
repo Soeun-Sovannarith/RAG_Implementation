@@ -1,9 +1,13 @@
-from langchain_ollama.llms import OllamaLLM
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from vector import retriever
 
-model = OllamaLLM(model="llama3.2")
+model = ChatOpenAI(
+    model="llama3.2:latest",
+    openai_api_key="ollama",
+    openai_api_base="http://localhost:11434/v1"
+)
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", "You are a helpful pizza restaurant assistant. Answer questions using these customer reviews:\n\n{reviews}"),
@@ -32,8 +36,9 @@ while True:
     full_response = ""
     
     for chunk in chain.stream({"reviews": reviews, "history": history, "question": q}):
-        print(chunk, end="", flush=True)
-        full_response += chunk
+        text = chunk.content if hasattr(chunk, "content") else str(chunk)
+        print(text, end="", flush=True)
+        full_response += text
         
     print()  # Newline after streaming completes
 

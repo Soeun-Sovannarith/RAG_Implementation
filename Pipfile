@@ -8,6 +8,7 @@ langchain = "*"
 langchain-ollama = "*"
 langchain-chroma = "*"
 pandas = "*"
+streamlit = "*"
 
 [dev-packages]
 

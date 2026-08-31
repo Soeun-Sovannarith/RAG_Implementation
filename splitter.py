@@ -10,7 +10,7 @@ def get_text_splitter(chunk_size: int = 300, chunk_overlap: int = 50) -> Recursi
     return RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", ". ", " ", ""]
+        separators=["\n\n", "\n", ". ", " ", ""]    
     )
 
 def split_documents(documents: List[Document], chunk_size: int = 300, chunk_overlap: int = 50) -> List[Document]:
