@@ -1,106 +1,190 @@
 import os
 import glob
+import json
+import math
 import pandas as pd
-from langchain_ollama import OllamaEmbeddings
-from langchain_chroma import Chroma
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
+from typing import List, Dict, Any
+from pypdf import PdfReader
+from splitter import split_documents
+from ollama_client import get_embedding
 
-embeddings = OllamaEmbeddings(model="mxbai-embed-large")
+DB_FILE_PATH = "local_vector_db.json"
 
-def parse_file_to_documents(path: str) -> list:
-    """Parses a file based on its extension and returns a list of Document objects."""
+def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    """
+    Computes mathematical Cosine Similarity between two vectors:
+    similarity = dot(A, B) / (||A|| * ||B||)
+    """
+    if not vec_a or not vec_b:
+        return 0.0
+    dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a * a for a in vec_a))
+    norm_b = math.sqrt(sum(b * b for b in vec_b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+class PureVectorStore:
+    """
+    A lightweight, pure Python Vector Database with JSON persistence and Cosine Similarity.
+    """
+    def __init__(self, db_path: str = DB_FILE_PATH):
+        self.db_path = db_path
+        self.documents: List[Dict[str, Any]] = [] # [{"content": str, "metadata": dict, "embedding": list[float]}]
+        self.load()
+
+    def add_documents(self, docs: List[Dict[str, Any]]):
+        """Generates embeddings for documents and appends them to the store."""
+        for doc in docs:
+            text = doc.get("content", "").strip()
+            if not text:
+                continue
+            emb = get_embedding(text)
+            if emb:
+                self.documents.append({
+                    "content": text,
+                    "metadata": doc.get("metadata", {}),
+                    "embedding": emb
+                })
+        self.save()
+
+    def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Embeds query, computes cosine similarity against all items, and returns top-k nearest docs.
+        """
+        if not self.documents:
+            return []
+            
+        query_emb = get_embedding(query)
+        if not query_emb:
+            return []
+            
+        scored_docs = []
+        for doc in self.documents:
+            score = cosine_similarity(query_emb, doc["embedding"])
+            scored_docs.append({
+                "content": doc["content"],
+                "metadata": doc["metadata"],
+                "score": score
+            })
+            
+        # Sort by similarity score descending
+        scored_docs.sort(key=lambda x: x["score"], reverse=True)
+        return scored_docs[:k]
+
+    def save(self):
+        """Persists database state to a JSON file."""
+        try:
+            with open(self.db_path, "w", encoding="utf-8") as f:
+                json.dump(self.documents, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving vector store to {self.db_path}: {e}")
+
+    def load(self):
+        """Loads database from disk if it exists."""
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, "r", encoding="utf-8") as f:
+                    self.documents = json.load(f)
+            except Exception as e:
+                print(f"Error loading vector store from {self.db_path}: {e}")
+                self.documents = []
+        else:
+            self.documents = []
+
+    def clear(self):
+        """Clears all records in memory and on disk."""
+        self.documents = []
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
+
+def parse_file_to_documents(path: str) -> List[Dict[str, Any]]:
+    """Parses files (CSV, PDF, TXT, MD) into standard dictionary documents."""
     docs = []
     name = os.path.basename(path)
     if os.path.isdir(path):
         return docs
         
-    # CSV structured files
+    # 1. CSV Files
     if path.endswith(".csv"):
         try:
             df = pd.read_csv(path)
             for _, r in df.iterrows():
                 text = f"{r.get('Title', '')} - {r.get('Review', r.get('text', str(r.to_dict())))}"
-                docs.append(Document(page_content=text.strip("- "), metadata={"source": name}))
+                docs.append({"content": text.strip("- "), "metadata": {"source": name}})
         except Exception as e:
             print(f"Warning: Failed to parse CSV {name}: {e}")
             
-    # PDF documents
+    # 2. PDF Files
     elif path.endswith(".pdf"):
         try:
-            pdf_loader = PyPDFLoader(path)
-            pdf_docs = pdf_loader.load()
-            for d in pdf_docs:
-                d.metadata["source"] = name
-            docs.extend(pdf_docs)
+            reader = PdfReader(path)
+            for page_num, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                if text.strip():
+                    docs.append({
+                        "content": text.strip(),
+                        "metadata": {"source": name, "page": page_num + 1}
+                    })
         except Exception as e:
-            print(f"Warning: Could not read PDF {name}: {e}")
+            print(f"Warning: Failed to parse PDF {name}: {e}")
             
-    # Any other text-based extension (.txt, .md, .json, .log, .html, etc.)
+    # 3. Plain Text / Markdown Files
     else:
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
                 if content.strip():
-                    docs.append(Document(page_content=content, metadata={"source": name}))
+                    docs.append({"content": content.strip(), "metadata": {"source": name}})
         except Exception as e:
-            print(f"Warning: Could not read text file {name}: {e}")
+            print(f"Warning: Failed to parse text file {name}: {e}")
             
     return docs
 
-def load_documents(data_dir: str = "data") -> list:
-    docs = []
+def load_documents(data_dir: str = "data") -> List[Dict[str, Any]]:
+    """Loads all base reviews and uploaded documents, then chunks them."""
+    raw_docs = []
+    
     # 1. Always load base reviews dataset
     if os.path.exists("realistic_restaurant_reviews.csv"):
         df = pd.read_csv("realistic_restaurant_reviews.csv")
         for _, r in df.iterrows():
-            docs.append(Document(page_content=f"{r['Title']} - {r['Review']}", metadata={"source": "reviews.csv"}))
+            raw_docs.append({
+                "content": f"{r['Title']} - {r['Review']}",
+                "metadata": {"source": "reviews.csv"}
+            })
 
-    # 2. Also load any additional multi-format files from data/ directory
+    # 2. Also load additional uploaded files from data/ directory
     if os.path.exists(data_dir):
         for path in glob.glob(f"{data_dir}/*"):
-            docs.extend(parse_file_to_documents(path))
+            raw_docs.extend(parse_file_to_documents(path))
 
-    # 3. Chunk documents into overlapping segments
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
-    return splitter.split_documents(docs)
+    # 3. Chunk documents into overlapping segments (pure Python)
+    return split_documents(raw_docs, chunk_size=800, chunk_overlap=150)
+
+# Initialize global Vector Store instance
+vector_store = PureVectorStore()
+
+# If the database file is missing or empty, build from documents
+if not vector_store.documents:
+    print("Building initial vector index from documents...")
+    initial_chunks = load_documents()
+    vector_store.add_documents(initial_chunks)
 
 def ingest_new_file(path: str):
-    """Parses, chunks, and indexes a single new file, updating the retriever."""
+    """Parses, chunks, and indexes a single new file into the vector store."""
     raw_docs = parse_file_to_documents(path)
     if not raw_docs:
         return None
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
-    new_chunks = splitter.split_documents(raw_docs)
+    new_chunks = split_documents(raw_docs, chunk_size=800, chunk_overlap=150)
     if new_chunks:
-        return update_retriever_with_new_docs(new_chunks)
+        vector_store.add_documents(new_chunks)
+        return vector_store
     return None
 
-docs = load_documents()
-
-# Chroma Vector Store (Dense Semantic Search)
-# Initialize Chroma: if the directory exists and is not empty, load from disk. Otherwise index the initial docs.
-if os.path.exists("./chrome_langchain_db") and os.listdir("./chrome_langchain_db"):
-    vector_store = Chroma(persist_directory="./chrome_langchain_db", embedding_function=embeddings)
-else:
-    vector_store = Chroma.from_documents(docs, embeddings, persist_directory="./chrome_langchain_db")
-
-retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-
 def reset_database():
-    """Deletes all persistent files/embeddings and rebuilds the database to defaults."""
-    global vector_store, retriever, docs
-    
-    # 1. Clear Chroma vector store documents using API (keeps file handles valid)
-    try:
-        all_ids = vector_store.get()["ids"]
-        if all_ids:
-            vector_store.delete(ids=all_ids)
-    except Exception as e:
-        print(f"Warning: Failed to clear Chroma collection: {e}")
-        
-    # 2. Clear uploaded files in data directory
+    """Deletes uploaded files, wipes the vector database, and rebuilds defaults."""
+    # 1. Clear uploaded files in data directory
     if os.path.exists("data"):
         for f in os.listdir("data"):
             file_path = os.path.join("data", f)
@@ -109,21 +193,11 @@ def reset_database():
                     os.unlink(file_path)
             except Exception as e:
                 print(f"Warning: Failed to delete file {f}: {e}")
-        
-    # 3. Reload base documents & add them back to Chroma
-    docs = load_documents()
-    if docs:
-        vector_store.add_documents(docs)
-        
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-    return retriever
-
-def update_retriever_with_new_docs(new_docs_chunks):
-    """Adds new chunks to vector store and returns the updated retriever."""
-    global vector_store, retriever, docs
+                
+    # 2. Clear vector store
+    vector_store.clear()
     
-    # Add new chunks directly to Chroma
-    vector_store.add_documents(new_docs_chunks)
-    docs = load_documents()
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-    return retriever
+    # 3. Reload default reviews
+    default_chunks = load_documents()
+    vector_store.add_documents(default_chunks)
+    return vector_store

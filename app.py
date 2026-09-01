@@ -1,9 +1,7 @@
 import os
 import streamlit as st
-from vector import retriever, ingest_new_file, reset_database, vector_store
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from vector import vector_store, ingest_new_file, reset_database
+from ollama_client import stream_chat
 
 # Page Configuration
 st.set_page_config(
@@ -15,7 +13,7 @@ st.set_page_config(
 # App Title & Header
 st.image("./image.png", width=100)
 st.title("KSHRD Pizza Restaurant RAG Assistant")
-st.markdown("Ask questions about customer reviews, menu items, or your own uploaded documents.")
+st.markdown("Ask questions about customer reviews, menu items, or your own uploaded documents (Pure Python / No LangChain).")
 
 # Initialize chat message history
 if "messages" not in st.session_state:
@@ -34,14 +32,14 @@ if uploaded_file is not None:
     os.makedirs("data", exist_ok=True)
     file_path = os.path.join("data", uploaded_file.name)
     
-    # Only ingest if the file is new or modified
+    # Ingest new file if it's not already uploaded or if newly selected
     if not os.path.exists(file_path):
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
             
         with st.sidebar.spinner(f"Ingesting {uploaded_file.name}..."):
-            updated_retriever = ingest_new_file(file_path)
-            if updated_retriever is not None:
+            res = ingest_new_file(file_path)
+            if res is not None:
                 st.sidebar.success(f"Successfully indexed: {uploaded_file.name}")
                 st.rerun()
             else:
@@ -72,87 +70,68 @@ for msg in st.session_state["messages"]:
         if "sources" in msg and msg["sources"]:
             with st.expander("View Retrieved Sources"):
                 for i, src in enumerate(msg["sources"]):
-                    st.markdown(f"**Chunk {i+1} | Source: `{src['source']}`**")
+                    score_info = f" | Similarity Score: {src['score']:.4f}" if "score" in src else ""
+                    st.markdown(f"**Chunk {i+1} | Source: `{src['source']}`{score_info}**")
                     st.markdown(f"_{src['content']}_")
                     st.markdown("---")
 
 # User Input & Generation Loop
 if user_input := st.chat_input("What would you like to know?"):
-    # Display user query
+    # 1. Display user query
     with st.chat_message("user"):
         st.markdown(user_input)
     st.session_state["messages"].append({"role": "user", "content": user_input})
     
-    # Retrieve relevant documents live from ChromaDB
+    # 2. Retrieve relevant documents using pure Python Cosine Similarity search
     with st.spinner("Searching reviews and documents..."):
         try:
-            live_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-            context_chunks = live_retriever.invoke(user_input)
+            results = vector_store.search(user_input, k=5)
         except Exception as e:
             st.error(f"Retrieval Error: {e}")
-            context_chunks = []
+            results = []
             
     sources = []
     reviews_text = ""
-    for doc in context_chunks:
-        src = doc.metadata.get("source", "Unknown")
-        sources.append({"source": src, "content": doc.page_content})
-        reviews_text += f"\n---\n{doc.page_content}"
+    for doc in results:
+        src = doc.get("metadata", {}).get("source", "Unknown")
+        score = doc.get("score", 0.0)
+        sources.append({"source": src, "content": doc["content"], "score": score})
+        reviews_text += f"\n---\n{doc['content']}"
 
-    # Load local Ollama model via OpenAI compatible API
-    try:
-        model = ChatOpenAI(
-            model="llama3.2",
-            openai_api_key="ollama",
-            openai_api_base="http://localhost:11434/v1"
-        )
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful pizza restaurant assistant. Answer questions using these customer reviews and documents:\n\n{reviews}"),
-            MessagesPlaceholder(variable_name="history"),
-            ("human", "{question}")
-        ])
+    # 3. Format Prompt & Chat History
+    system_prompt = (
+        "You are a helpful pizza restaurant assistant. "
+        f"Answer questions using these customer reviews and documents:\n\n{reviews_text}"
+    )
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    for m in st.session_state["messages"][:-1]:  # Exclude current query
+        messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "user", "content": user_input})
+    
+    # 4. Stream response from Ollama
+    with st.chat_message("assistant"):
+        response_placeholder = st.empty()
+        full_response_container = [""]
         
-        # Format chat history for LangChain prompt
-        langchain_history = []
-        for m in st.session_state["messages"][:-1]:  # Exclude current query
-            if m["role"] == "user":
-                langchain_history.append(HumanMessage(content=m["content"]))
-            elif m["role"] == "assistant":
-                langchain_history.append(AIMessage(content=m["content"]))
+        def stream_generator():
+            for token in stream_chat(messages, model="llama3.2"):
+                full_response_container[0] += token
+                yield token
                 
-        chain = prompt_template | model
+        response_placeholder.write_stream(stream_generator())
+        full_response = full_response_container[0]
         
-        # Stream response
-        with st.chat_message("assistant"):
-            response_placeholder = st.empty()
-            full_response_container = [""]
-            
-            def stream_generator():
-                for chunk in chain.stream({
-                    "reviews": reviews_text,
-                    "history": langchain_history,
-                    "question": user_input
-                }):
-                    text = chunk.content if hasattr(chunk, "content") else str(chunk)
-                    full_response_container[0] += text
-                    yield text
+        # Show source evidence
+        if sources:
+            with st.expander("View Retrieved Sources"):
+                for i, src in enumerate(sources):
+                    st.markdown(f"**Chunk {i+1} | Source: `{src['source']}` (Score: {src['score']:.4f})**")
+                    st.markdown(f"_{src['content']}_")
+                    st.markdown("---")
                     
-            response_placeholder.write_stream(stream_generator())
-            full_response = full_response_container[0]
-            
-            # Show sources
-            if sources:
-                with st.expander("🔍 View Retrieved Sources"):
-                    for i, src in enumerate(sources):
-                        st.markdown(f"**Chunk {i+1} | Source: `{src['source']}`**")
-                        st.markdown(f"_{src['content']}_")
-                        st.markdown("---")
-                        
-        st.session_state["messages"].append({
-            "role": "assistant",
-            "content": full_response,
-            "sources": sources
-        })
-    except Exception as e:
-        st.error(f"Error connecting to Ollama LLM: {e}")
-        st.info("Please make sure Ollama is running locally and model 'llama3.2' is pulled.")
+    st.session_state["messages"].append({
+        "role": "assistant",
+        "content": full_response,
+        "sources": sources
+    })

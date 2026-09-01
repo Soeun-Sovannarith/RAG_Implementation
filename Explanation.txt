@@ -1,0 +1,306 @@
+================================================================================
+🍕 LOCAL PIZZA RESTAURANT RAG QA ASSISTANT (BUILT FROM SCRATCH)
+Comprehensive Technical Explanation, Line-by-Line Code Breakdown & Defense Guide
+================================================================================
+
+1. PROJECT OVERVIEW
+--------------------------------------------------------------------------------
+This project is a 100% local Retrieval-Augmented Generation (RAG) system built
+completely from scratch in pure Python without using black-box orchestration
+frameworks (like LangChain, LlamaIndex, or ChromaDB).
+
+The system acts as an intelligent assistant for a pizza restaurant:
+- Ingests restaurant reviews and uploaded documentation (menus, PDFs, etc.).
+- Converts text into mathematical vectors via a local embedding model.
+- Searches for relevant context using custom Cosine Similarity.
+- Augments an LLM prompt with the retrieved evidence.
+- Streams natural language answers directly to the user in real-time.
+
+
+2. CORE ARCHITECTURE PIPELINE
+--------------------------------------------------------------------------------
+[1. Raw Documents] (PDF, CSV, TXT, MD)
+       │
+       ▼
+[2. Pure Python Text Splitter] (splitter.py: chunk_size=800, overlap=150)
+       │
+       ▼
+[3. Embedding via Ollama REST API] (ollama_client.py: mxbai-embed-large)
+       │
+       ▼
+[4. Custom JSON Vector Database] (vector.py: local_vector_db.json)
+       │
+       ▼ (User asks a question)
+[5. Cosine Similarity Vector Search] (similarity = dot(A,B) / (||A|| * ||B||))
+       │
+       ▼ (Top 5 Best Matches)
+[6. Prompt Augmentation] (Injects retrieved context into system prompt)
+       │
+       ▼
+[7. Direct Ollama Streaming] (ollama_client.py: llama3.2 via /api/chat)
+       │
+       ▼
+[8. Real-time Output & Memory] (CLI main.py & Streamlit Web UI app.py)
+
+
+================================================================================
+3. COMPLETE LINE-BY-LINE & CODE BLOCK EXPLANATION
+================================================================================
+
+--------------------------------------------------------------------------------
+FILE 1: ollama_client.py (Direct HTTP Communication with Local Models)
+--------------------------------------------------------------------------------
+This file replaces LangChain's model wrappers (`OllamaEmbeddings`, `ChatOpenAI`)
+with direct HTTP requests to the local Ollama daemon on port 11434.
+
+Code Block 1: `get_embedding(text, model="mxbai-embed-large")`
+```python
+def get_embedding(text: str, model: str = "mxbai-embed-large") -> List[float]:
+    url = f"{OLLAMA_BASE_URL}/api/embeddings"
+    payload = {"model": model, "prompt": text}
+    response = requests.post(url, json=payload)
+    data = response.json()
+    return data.get("embedding", [])
+```
+• Explanation:
+  - Takes an input string (e.g. a review chunk or user query).
+  - Sends an HTTP POST request to Ollama's `/api/embeddings` endpoint.
+  - Returns a list of 1,024 floating-point numbers representing the semantic
+    meaning of the text in high-dimensional vector space.
+
+Code Block 2: `stream_chat(messages, model="llama3.2")`
+```python
+def stream_chat(messages: List[Dict[str, str]], model: str = "llama3.2") -> Generator[str, None, None]:
+    url = f"{OLLAMA_BASE_URL}/api/chat"
+    payload = {"model": model, "messages": messages, "stream": True}
+    with requests.post(url, json=payload, stream=True) as response:
+        for line in response.iter_lines():
+            if line:
+                chunk = json.loads(line.decode("utf-8"))
+                token = chunk.get("message", {}).get("content", "")
+                yield token
+                if chunk.get("done", False):
+                    break
+```
+• Explanation:
+  - Takes a list of chat message dictionaries (`[{"role": "...", "content": "..."}]`).
+  - Sets `"stream": True` so Ollama sends tokens back as soon as they are computed.
+  - Uses a Python `yield` generator to stream tokens line-by-line to the caller
+    in real-time (producing the typewriter effect on screen).
+
+
+--------------------------------------------------------------------------------
+FILE 2: splitter.py (Pure Python Text Chunking Algorithm)
+--------------------------------------------------------------------------------
+This file breaks long documents into smaller overlapping segments so that text fits
+within the LLM context window without losing meaning across sentence boundaries.
+
+Code Block: `split_text(text, chunk_size=800, chunk_overlap=150)`
+```python
+def split_text(text: str, chunk_size: int = 800, chunk_overlap: int = 150) -> List[str]:
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        if end >= len(text):
+            chunks.append(text[start:].strip())
+            break
+        
+        # Look backwards for natural break delimiters
+        chunk_slice = text[start:end]
+        cut_index = -1
+        for separator in ["\n\n", "\n", ". ", " "]:
+            last_pos = chunk_slice.rfind(separator)
+            if last_pos != -1 and last_pos > int(chunk_size * 0.4):
+                cut_index = last_pos + len(separator)
+                break
+        
+        if cut_index == -1:
+            cut_index = chunk_size
+            
+        chunk = text[start:start + cut_index].strip()
+        if chunk:
+            chunks.append(chunk)
+            
+        # Advance forward by (cut_index - chunk_overlap)
+        start += max(1, cut_index - chunk_overlap)
+    return chunks
+```
+• Explanation:
+  - `start` & `end`: Define the current character window slice (800 chars).
+  - `rfind(separator)`: Searches backwards for paragraphs (`\n\n`), newlines (`\n`),
+    full stops (`. `), or spaces (` `) to avoid cutting words or sentences in half.
+  - `start += (cut_index - chunk_overlap)`: Steps forward while maintaining an
+    overlap of 150 characters so thoughts crossing the boundary are not lost.
+
+
+--------------------------------------------------------------------------------
+FILE 3: vector.py (Custom Vector Database & Mathematical Cosine Similarity)
+--------------------------------------------------------------------------------
+This file manages document ingestion, mathematical vector distance computation,
+and JSON database persistence.
+
+Code Block 1: `cosine_similarity(vec_a, vec_b)`
+```python
+def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a * a for a in vec_a))
+    norm_b = math.sqrt(sum(b * b for b in vec_b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+```
+• Explanation:
+  - Implements the formal mathematical formula:
+    $$\text{Cosine Similarity}(A, B) = \frac{A \cdot B}{\|A\| \|B\|}$$
+  - `dot_product`: Multiplies corresponding dimensions ($\sum A_i \times B_i$).
+  - `norm_a`, `norm_b`: Calculates the Euclidean magnitude (length) of each vector.
+  - Returns a score between 0.0 (unrelated) and 1.0 (exact match).
+
+Code Block 2: `PureVectorStore.search(query, k=5)`
+```python
+def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+    query_emb = get_embedding(query)
+    scored_docs = []
+    for doc in self.documents:
+        score = cosine_similarity(query_emb, doc["embedding"])
+        scored_docs.append({
+            "content": doc["content"],
+            "metadata": doc["metadata"],
+            "score": score
+        })
+    # Sort descending by score and return top k
+    scored_docs.sort(key=lambda x: x["score"], reverse=True)
+    return scored_docs[:k]
+```
+• Explanation:
+  - Converts the user query into a vector via Ollama.
+  - Computes cosine similarity between the query and all stored document vectors.
+  - Sorts documents from highest score to lowest, returning the top $k=5$ results.
+
+Code Block 3: `parse_file_to_documents(path)`
+```python
+def parse_file_to_documents(path: str) -> List[Dict[str, Any]]:
+    # CSV Files: Combines Title and Review columns using pandas
+    if path.endswith(".csv"):
+        df = pd.read_csv(path)
+        for _, r in df.iterrows():
+            docs.append({"content": f"{r['Title']} - {r['Review']}", "metadata": {"source": name}})
+            
+    # PDF Files: Extracts text page-by-page using pypdf.PdfReader
+    elif path.endswith(".pdf"):
+        reader = PdfReader(path)
+        for page_num, page in enumerate(reader.pages):
+            docs.append({"content": page.extract_text(), "metadata": {"source": name, "page": page_num + 1}})
+            
+    # Plain Text / Markdown Files
+    else:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            docs.append({"content": f.read(), "metadata": {"source": name}})
+```
+• Explanation:
+  - Normalizes any input format (CSV, PDF, TXT, MD) into a unified dictionary:
+    `{"content": "...", "metadata": {"source": "filename.pdf"}}`.
+
+
+--------------------------------------------------------------------------------
+FILE 4: main.py (Interactive CLI Chat & Prompt Augmentation Loop)
+--------------------------------------------------------------------------------
+This file runs the interactive command-line loop.
+
+Code Block: The Prompt Augmentation Loop
+```python
+while True:
+    q = input("\nUser: ").strip()
+    if q.lower() in ["q", "quit", "exit"]:
+        break
+
+    # 1. RETRIEVE: Pure Python vector search
+    results = vector_store.search(q, k=5)
+    reviews_context = "\n---\n".join([doc["content"] for doc in results])
+
+    # 2. AUGMENT: Format prompt with retrieved context
+    system_prompt = SYSTEM_INSTRUCTION.format(reviews=reviews_context)
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)                      # Injects past chat turns
+    messages.append({"role": "user", "content": q})
+
+    # 3. GENERATE: Stream tokens in real-time from Ollama
+    full_response = ""
+    for token in stream_chat(messages, model="llama3.2"):
+        print(token, end="", flush=True)
+        full_response += token
+
+    # 4. MEMORY: Save interaction for multi-turn history
+    history.append({"role": "user", "content": q})
+    history.append({"role": "assistant", "content": full_response})
+```
+• Explanation:
+  - `vector_store.search(q, k=5)`: Extracts the 5 most relevant pieces of evidence.
+  - `reviews_context`: Joins the 5 snippets with `\n---\n` separators.
+  - `SYSTEM_INSTRUCTION.format(...)`: Injects context into the system prompt.
+  - `stream_chat(...)`: Prints the LLM's response word-by-word.
+  - `history.append(...)`: Keeps conversation memory alive for follow-up questions.
+
+
+--------------------------------------------------------------------------------
+FILE 5: app.py (Streamlit Web User Interface)
+--------------------------------------------------------------------------------
+This file provides a graphical web dashboard with file uploads and streaming chat.
+
+Key Code Highlights:
+1. Dynamic File Ingestion:
+   ```python
+   uploaded_file = st.sidebar.file_uploader("Upload Documentation", type=["pdf", "csv", "txt", "md"])
+   if uploaded_file is not None:
+       file_path = os.path.join("data", uploaded_file.name)
+       with open(file_path, "wb") as f:
+           f.write(uploaded_file.getbuffer())
+       ingest_new_file(file_path)  # Immediately parses, embeds, and updates vector store
+   ```
+2. Real-time Response Streaming:
+   ```python
+   def stream_generator():
+       for token in stream_chat(messages, model="llama3.2"):
+           yield token
+   st.write_stream(stream_generator())
+   ```
+3. Source Transparency:
+   ```python
+   with st.expander("View Retrieved Sources"):
+       for i, src in enumerate(sources):
+           st.markdown(f"**Chunk {i+1} | Source: `{src['source']}` (Score: {src['score']:.4f})**")
+           st.markdown(f"_{src['content']}_")
+   ```
+
+
+================================================================================
+4. LECTURER Q&A DEFENSE CHEATSHEET
+================================================================================
+
+Q1: Why did you build this from scratch instead of using LangChain?
+A1: Building from scratch removes framework abstractions and "magic". It
+    proves full mastery of the foundational mathematics (Cosine Similarity, vector
+    dot products), HTTP REST client communication, sliding-window chunking
+    algorithms, and prompt injection mechanisms.
+
+Q2: Why use Cosine Similarity instead of Euclidean Distance?
+A2: Cosine Similarity evaluates the angle (direction) between vectors rather than
+    their magnitude (length). This is ideal for text embeddings because document
+    length variations do not distort the semantic similarity score.
+
+Q3: Why is chunk overlap necessary?
+A3: If a sentence or key piece of information is cut in half at the 800-character
+    boundary, semantic meaning is lost. Overlap (150 characters) ensures that
+    context across split boundaries remains intact in at least one chunk.
+
+Q4: What models are used and why?
+A4: - Embedding Model: `mxbai-embed-large` (1024 dimensions) — High-ranking open
+      source model specifically optimized for retrieval tasks.
+    - Generation Model: `llama3.2` (3B parameters) — Lightweight, low-latency,
+      highly capable local LLM from Meta that runs efficiently on consumer hardware.
+
+Q5: Where is the vector database saved?
+A5: In `local_vector_db.json` on disk. It stores the chunk content, metadata (source
+    filename, page number), and embedding arrays in clean JSON format.
+================================================================================

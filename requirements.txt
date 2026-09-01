@@ -1,12 +1,4 @@
-langchain
-langchain-ollama
-langchain-chroma
+requests
 pandas
-langchain-text-splitters
-langchain-community
-langchain-qdrant
-qdrant-client
-rank_bm25
-streamlit
 pypdf
-langchain-openai
+streamlit

@@ -1,58 +1,68 @@
-from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
-from langchain_core.documents import Document
-from typing import List
+from typing import List, Dict, Any
 
-def get_text_splitter(chunk_size: int = 150, chunk_overlap: int = 50) -> RecursiveCharacterTextSplitter:
+def split_text(text: str, chunk_size: int = 800, chunk_overlap: int = 150) -> List[str]:
     """
-    Returns a configured RecursiveCharacterTextSplitter.
-    Attempts to split on ["\n\n", "\n", ". ", " ", ""] to keep semantic blocks together.
+    Pure Python text chunker with overlapping sliding window.
+    Splits text by natural separators (\n\n, \n, . , space) to preserve context.
     """
-    return RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", ". ", " ", ""]    
-    )
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= chunk_size:
+        return [text]
 
-def split_documents(documents: List[Document], chunk_size: int = 500, chunk_overlap: int = 100) -> List[Document]:
-    """
-    Splits a list of Document objects into smaller chunks while preserving metadata.
-    """
-    splitter = get_text_splitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    return splitter.split_documents(documents)
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        if end >= len(text):
+            chunks.append(text[start:].strip())
+            break
+        
+        # Try to find a natural break point (paragraph, sentence, word)
+        chunk_slice = text[start:end]
+        cut_index = -1
+        
+        for separator in ["\n\n", "\n", ". ", " "]:
+            last_pos = chunk_slice.rfind(separator)
+            if last_pos != -1 and last_pos > int(chunk_size * 0.4): # ensure chunk is not too small
+                cut_index = last_pos + len(separator)
+                break
+        
+        if cut_index == -1:
+            cut_index = chunk_size
+            
+        chunk = text[start:start + cut_index].strip()
+        if chunk:
+            chunks.append(chunk)
+            
+        start += max(1, cut_index - chunk_overlap)
+        
+    return chunks
 
-def split_markdown_by_headers(markdown_text: str) -> List[Document]:
+def split_documents(documents: List[Dict[str, Any]], chunk_size: int = 800, chunk_overlap: int = 150) -> List[Dict[str, Any]]:
     """
-    Demonstrates Document-Structure-Aware Splitting by splitting markdown text on headers (#, ##).
-    Automatically attaches header titles into metadata for precise section retrieval.
+    Splits a list of document dicts {"content": str, "metadata": dict} into smaller chunks.
     """
-    headers_to_split_on = [
-        ("#", "Header 1"),
-        ("##", "Header 2"),
-    ]
-    markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
-    return markdown_splitter.split_text(markdown_text)
+    chunked_docs = []
+    for doc in documents:
+        content = doc.get("content", "")
+        metadata = doc.get("metadata", {})
+        chunks = split_text(content, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        for chunk in chunks:
+            chunked_docs.append({
+                "content": chunk,
+                "metadata": metadata.copy()
+            })
+    return chunked_docs
 
 if __name__ == "__main__":
-    print("=== 1. Testing Recursive Character Text Splitter ===")
-    sample_text = (
+    sample = (
         "The pizza at Mario's Pizzeria was absolutely magnificent! "
         "The crust was crispy on the outside, light and airy on the inside. "
         "The tomato sauce had just the right balance of sweet and tangy flavors."
     )
-    doc = Document(page_content=sample_text, metadata={"source": "sample_review.txt", "rating": 5})
-    chunks = split_documents([doc], chunk_size=150, chunk_overlap=30)
-    for i, chunk in enumerate(chunks):
-        print(f"Chunk {i+1} [{len(chunk.page_content)} chars]: {chunk.page_content}")
-
-    print("\n=== 2. Testing Structure-Aware Markdown Header Splitter ===")
-    sample_md = """# Pizza Menu Options
-
-## Signature Pizzas
-Our signature pizzas are crafted using 72-hour fermented sourdough crust.
-
-## Specialty Drinks
-We offer authentic Italian sodas, house sangria, and local craft IPAs.
-"""
-    md_chunks = split_markdown_by_headers(sample_md)
-    for i, chunk in enumerate(md_chunks):
-        print(f"MD Chunk {i+1} [Metadata: {chunk.metadata}]: {chunk.page_content}")
+    chunks = split_text(sample, chunk_size=70, chunk_overlap=20)
+    print("Testing pure Python text splitter:")
+    for i, c in enumerate(chunks):
+        print(f"Chunk {i+1} ({len(c)} chars): {c}")

@@ -1,46 +1,56 @@
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
-from vector import retriever
+from vector import vector_store
+from ollama_client import stream_chat
 
-model = ChatOpenAI(
-    model="llama3.2:latest",
-    openai_api_key="ollama",
-    openai_api_base="http://localhost:11434/v1"
+SYSTEM_INSTRUCTION = (
+    "You are a helpful pizza restaurant assistant. "
+    "Answer questions accurately using these customer reviews and documents:\n\n{reviews}"
 )
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful pizza restaurant assistant. Answer questions using these customer reviews:\n\n{reviews}"),
-    MessagesPlaceholder(variable_name="history"),
-    ("human", "{question}")
-])
+def main():
+    print("Pizza Restaurant RAG QA Assistant (Pure Python / No Frameworks)")
+    print("Type 'q' or 'exit' to quit.")
+    print("-" * 65)
 
-chain = prompt | model
-history = []
+    history = []  # Stores conversation turns: [{"role": "user"|"assistant", "content": "..."}]
 
-print("Pizza Restaurant RAG QA Assistant (Type 'q' to quit)")
-print("-" * 50)
+    while True:
+        try:
+            q = input("\nUser: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nGoodbye!")
+            break
 
-while True:
-    q = input("\nUser: ").strip()
-    if not q or q.lower() in ["q", "quit", "exit"]:
-        print("Goodbye!")
-        break
+        if not q or q.lower() in ["q", "quit", "exit"]:
+            print("Goodbye!")
+            break
 
-    # Retrieve relevant review chunks (ChromaDB Vector Search)
-    context_chunks = retriever.invoke(q)
-    reviews = "\n---\n".join([d.page_content for d in context_chunks])
+        # 1. RETRIEVE: Pure Python Cosine Similarity Search on Chroma / Vector Store
+        results = vector_store.search(q, k=5)
+        reviews_context = "\n---\n".join([doc["content"] for doc in results])
 
-    # Stream answer in real-time as tokens arrive
-    print("\nAssistant: ", end="", flush=True)
-    full_response = ""
-    
-    for chunk in chain.stream({"reviews": reviews, "history": history, "question": q}):
-        text = chunk.content if hasattr(chunk, "content") else str(chunk)
-        print(text, end="", flush=True)
-        full_response += text
+        # 2. AUGMENT: Construct the prompt messages payload
+        system_prompt = SYSTEM_INSTRUCTION.format(reviews=reviews_context)
+        messages = [{"role": "system", "content": system_prompt}]
         
-    print()  # Newline after streaming completes
+        # Add past multi-turn history
+        messages.extend(history)
+        
+        # Add current user query
+        messages.append({"role": "user", "content": q})
 
-    # Track conversation history
-    history.extend([HumanMessage(content=q), AIMessage(content=full_response)])
+        # 3. GENERATE: Stream tokens in real-time from Ollama /api/chat
+        print("\nAssistant: ", end="", flush=True)
+        full_response = ""
+        
+        for token in stream_chat(messages, model="llama3.2"):
+            print(token, end="", flush=True)
+            full_response += token
+            
+        print()  # Newline after streaming completes
+
+        # 4. MEMORY: Save interaction for multi-turn chat context
+        history.append({"role": "user", "content": q})
+        history.append({"role": "assistant", "content": full_response})
+
+if __name__ == "__main__":
+    main()
