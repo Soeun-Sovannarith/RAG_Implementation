@@ -5,8 +5,6 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.retrievers.bm25 import BM25Retriever
-from langchain_classic.retrievers.ensemble import EnsembleRetriever
 from langchain_community.document_loaders import PyPDFLoader
 
 embeddings = OllamaEmbeddings(model="mxbai-embed-large")
@@ -53,23 +51,23 @@ def parse_file_to_documents(path: str) -> list:
 
 def load_documents(data_dir: str = "data") -> list:
     docs = []
-    # 1. Load multi-format files from data/ directory
-    if os.path.exists(data_dir):
-        for path in glob.glob(f"{data_dir}/*"):
-            docs.extend(parse_file_to_documents(path))
-
-    # 2. Fallback to default CSV if data folder is missing or empty
-    if not docs and os.path.exists("realistic_restaurant_reviews.csv"):
+    # 1. Always load base reviews dataset
+    if os.path.exists("realistic_restaurant_reviews.csv"):
         df = pd.read_csv("realistic_restaurant_reviews.csv")
         for _, r in df.iterrows():
             docs.append(Document(page_content=f"{r['Title']} - {r['Review']}", metadata={"source": "reviews.csv"}))
+
+    # 2. Also load any additional multi-format files from data/ directory
+    if os.path.exists(data_dir):
+        for path in glob.glob(f"{data_dir}/*"):
+            docs.extend(parse_file_to_documents(path))
 
     # 3. Chunk documents into overlapping segments
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
     return splitter.split_documents(docs)
 
 def ingest_new_file(path: str):
-    """Parses, chunks, and indexes a single new file, updating the retrievers."""
+    """Parses, chunks, and indexes a single new file, updating the retriever."""
     raw_docs = parse_file_to_documents(path)
     if not raw_docs:
         return None
@@ -88,20 +86,11 @@ if os.path.exists("./chrome_langchain_db") and os.listdir("./chrome_langchain_db
 else:
     vector_store = Chroma.from_documents(docs, embeddings, persist_directory="./chrome_langchain_db")
 
-vector_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-
-# BM25 Retriever (Sparse Keyword Search)
-bm25_retriever = BM25Retriever.from_documents(docs, k=5)
-
-# Hybrid Retriever combining BM25 + Vector Similarity
-retriever = EnsembleRetriever(
-    retrievers=[bm25_retriever, vector_retriever],
-    weights=[0.4, 0.6]
-)
+retriever = vector_store.as_retriever(search_kwargs={"k": 5})
 
 def reset_database():
     """Deletes all persistent files/embeddings and rebuilds the database to defaults."""
-    global vector_store, retriever, bm25_retriever, vector_retriever, docs
+    global vector_store, retriever, docs
     
     # 1. Clear Chroma vector store documents using API (keeps file handles valid)
     try:
@@ -126,27 +115,15 @@ def reset_database():
     if docs:
         vector_store.add_documents(docs)
         
-    vector_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-    bm25_retriever = BM25Retriever.from_documents(docs, k=5)
-    retriever = EnsembleRetriever(
-        retrievers=[bm25_retriever, vector_retriever],
-        weights=[0.4, 0.6]
-    )
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     return retriever
 
 def update_retriever_with_new_docs(new_docs_chunks):
-    """Adds new chunks to vector store and updates both BM25 and Ensemble retrievers."""
-    global vector_store, retriever, bm25_retriever, vector_retriever, docs
+    """Adds new chunks to vector store and returns the updated retriever."""
+    global vector_store, retriever, docs
     
-    # 1. Add to Chroma
+    # Add new chunks directly to Chroma
     vector_store.add_documents(new_docs_chunks)
-    
-    # 2. Reload all documents from disk to rebuild BM25 (so it matches Chroma)
     docs = load_documents()
-    vector_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-    bm25_retriever = BM25Retriever.from_documents(docs, k=5)
-    retriever = EnsembleRetriever(
-        retrievers=[bm25_retriever, vector_retriever],
-        weights=[0.4, 0.6]
-    )
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     return retriever

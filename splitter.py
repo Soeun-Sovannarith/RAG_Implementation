@@ -2,7 +2,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHea
 from langchain_core.documents import Document
 from typing import List
 
-def get_text_splitter(chunk_size: int = 300, chunk_overlap: int = 50) -> RecursiveCharacterTextSplitter:
+def get_text_splitter(chunk_size: int = 150, chunk_overlap: int = 50) -> RecursiveCharacterTextSplitter:
     """
     Returns a configured RecursiveCharacterTextSplitter.
     Attempts to split on ["\n\n", "\n", ". ", " ", ""] to keep semantic blocks together.
@@ -13,7 +13,7 @@ def get_text_splitter(chunk_size: int = 300, chunk_overlap: int = 50) -> Recursi
         separators=["\n\n", "\n", ". ", " ", ""]    
     )
 
-def split_documents(documents: List[Document], chunk_size: int = 300, chunk_overlap: int = 50) -> List[Document]:
+def split_documents(documents: List[Document], chunk_size: int = 500, chunk_overlap: int = 100) -> List[Document]:
     """
     Splits a list of Document objects into smaller chunks while preserving metadata.
     """

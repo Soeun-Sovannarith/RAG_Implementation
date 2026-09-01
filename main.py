@@ -27,7 +27,7 @@ while True:
         print("Goodbye!")
         break
 
-    # Retrieve relevant review chunks (Hybrid BM25 + Vector Search)
+    # Retrieve relevant review chunks (ChromaDB Vector Search)
     context_chunks = retriever.invoke(q)
     reviews = "\n---\n".join([d.page_content for d in context_chunks])
 

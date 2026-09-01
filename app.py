@@ -1,6 +1,6 @@
 import os
 import streamlit as st
-from vector import retriever, ingest_new_file, reset_database
+from vector import retriever, ingest_new_file, reset_database, vector_store
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
@@ -13,22 +13,11 @@ st.set_page_config(
 )
 
 # App Title & Header
-st.image("./image.png",width=100)
+st.image("./image.png", width=100)
 st.title("KSHRD Pizza Restaurant RAG Assistant")
 st.markdown("Ask questions about customer reviews, menu items, or your own uploaded documents.")
 
-# Initialize session states
-if "retriever" not in st.session_state:
-    st.session_state["retriever"] = retriever
-
-if "processed_files" not in st.session_state:
-    st.session_state["processed_files"] = set()
-    # Populate already existing files in data/ directory
-    if os.path.exists("data"):
-        for f in os.listdir("data"):
-            if os.path.isfile(os.path.join("data", f)) and not f.startswith("."):
-                st.session_state["processed_files"].add(f)
-
+# Initialize chat message history
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
@@ -42,42 +31,38 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 if uploaded_file is not None:
-    if uploaded_file.name not in st.session_state["processed_files"]:
-        os.makedirs("data", exist_ok=True)
-        file_path = os.path.join("data", uploaded_file.name)
-        
-        # Save file to disk
+    os.makedirs("data", exist_ok=True)
+    file_path = os.path.join("data", uploaded_file.name)
+    
+    # Only ingest if the file is new or modified
+    if not os.path.exists(file_path):
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
             
         with st.sidebar.spinner(f"Ingesting {uploaded_file.name}..."):
             updated_retriever = ingest_new_file(file_path)
             if updated_retriever is not None:
-                st.session_state["retriever"] = updated_retriever
-                st.session_state["processed_files"].add(uploaded_file.name)
                 st.sidebar.success(f"Successfully indexed: {uploaded_file.name}")
                 st.rerun()
             else:
                 st.sidebar.error(f"Failed to process {uploaded_file.name}")
 
 # List current sources
-st.sidebar.markdown("### 📁 Indexed Sources")
-if st.session_state["processed_files"]:
-    for f in sorted(list(st.session_state["processed_files"])):
+st.sidebar.markdown("### Indexed Sources")
+st.sidebar.markdown("- `realistic_restaurant_reviews.csv` (Default Reviews)")
+if os.path.exists("data"):
+    uploaded_docs = [f for f in os.listdir("data") if not f.startswith(".")]
+    for f in sorted(uploaded_docs):
         st.sidebar.markdown(f"- `{f}`")
-else:
-    st.sidebar.markdown("- `realistic_restaurant_reviews.csv` (Default)")
 
 st.sidebar.markdown("---")
 
 # Reset Database Action
 if st.sidebar.button("Reset Database to Defaults", type="primary"):
     with st.sidebar.spinner("Resetting database..."):
-        reset_retriever = reset_database()
-        st.session_state["retriever"] = reset_retriever
-        st.session_state["processed_files"] = set()
+        reset_database()
         st.session_state["messages"] = []
-        st.sidebar.success("Database has been reset!")
+        st.sidebar.success("Database has been reset to default reviews!")
         st.rerun()
 
 # Display chat messages from history
@@ -85,7 +70,7 @@ for msg in st.session_state["messages"]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "sources" in msg and msg["sources"]:
-            with st.expander("🔍 View Retrieved Sources"):
+            with st.expander("View Retrieved Sources"):
                 for i, src in enumerate(msg["sources"]):
                     st.markdown(f"**Chunk {i+1} | Source: `{src['source']}`**")
                     st.markdown(f"_{src['content']}_")
@@ -98,10 +83,11 @@ if user_input := st.chat_input("What would you like to know?"):
         st.markdown(user_input)
     st.session_state["messages"].append({"role": "user", "content": user_input})
     
-    # Retrieve relevant documents using hybrid retriever
+    # Retrieve relevant documents live from ChromaDB
     with st.spinner("Searching reviews and documents..."):
         try:
-            context_chunks = st.session_state["retriever"].invoke(user_input)
+            live_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+            context_chunks = live_retriever.invoke(user_input)
         except Exception as e:
             st.error(f"Retrieval Error: {e}")
             context_chunks = []
@@ -131,9 +117,6 @@ if user_input := st.chat_input("What would you like to know?"):
         for m in st.session_state["messages"][:-1]:  # Exclude current query
             if m["role"] == "user":
                 langchain_history.append(HumanMessage(content=m["content"]))
-            elif m["role"] == m.get("content"):
-                # Wait, st.session_state["messages"] role checks:
-                pass
             elif m["role"] == "assistant":
                 langchain_history.append(AIMessage(content=m["content"]))
                 
