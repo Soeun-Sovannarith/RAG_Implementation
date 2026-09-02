@@ -42,7 +42,7 @@ def main():
         print("\nAssistant: ", end="", flush=True)
         full_response = ""
         
-        for token in stream_chat(messages, model="llama3.2"):
+        for token in stream_chat(messages, model="tinyllama:latest"):
             print(token, end="", flush=True)
             full_response += token
             

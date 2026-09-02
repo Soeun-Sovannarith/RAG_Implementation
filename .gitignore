@@ -1,0 +1,22 @@
+# Python Virtual Environments
+RAG_Implementation/
+venv/
+.venv/
+env/
+.env
+
+# Python Caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Vector Databases & Generated Artifacts
+chrome_langchain_db/
+chroma_db/
+qdrant_db/
+local_vector_db.json
+
+# Operating System Files
+.DS_Store
+Thumbs.db
